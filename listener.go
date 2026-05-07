@@ -228,7 +228,7 @@ func (wl *wrappedListener) serveAnyTLS(conn net.Conn, connectionID uint64) {
 	defer wl.config.release()
 	startedAt := time.Now()
 
-	_ = conn.SetDeadline(time.Now().Add(time.Duration(wl.config.IdleTimeout)))
+	conn = newIdleTimeoutConn(conn, time.Duration(wl.config.IdleTimeout))
 
 	source := M.SocksaddrFromNet(conn.RemoteAddr())
 	baseCtx, cancel := context.WithCancel(context.Background())
