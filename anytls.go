@@ -51,7 +51,7 @@ type ListenerWrapper struct {
 	registry         *sessionRegistry
 	detector         Detector
 	service          *singanytls.Service
-	websiteConns     sync.Map
+	websiteConns     *sync.Map
 	dialFunc         func(ctx context.Context, network string, address string) (net.Conn, error)
 	listenPacketFunc func(ctx context.Context, network string, address string) (net.PacketConn, error)
 }
@@ -96,6 +96,9 @@ func (lw *ListenerWrapper) Provision(ctx caddy.Context) error {
 	}
 	if lw.registry == nil {
 		lw.registry = newSessionRegistry()
+	}
+	if lw.websiteConns == nil {
+		lw.websiteConns = &sync.Map{}
 	}
 	if server, ok := ctx.Context.Value(caddyhttp.ServerCtxKey).(*caddyhttp.Server); ok && server != nil {
 		server.RegisterConnContext(lw.websiteConnContext)
@@ -334,11 +337,11 @@ func (h *directTCPHandler) handleUDPOverTCP(ctx context.Context, conn net.Conn, 
 		zap.String("destination", request.Destination.String()),
 	)
 
-	relayUDPOverTCP(ctx, uotConn, packetConn, h.validatePacketDestination, closeOnce)
+	relayUDPOverTCP(ctx, uotConn, packetConn, h.validateDestination, closeOnce)
 }
 
 func (h *directTCPHandler) dialContext(ctx context.Context, destination M.Socksaddr) (net.Conn, error) {
-	if err := h.validateStreamDestination(destination); err != nil {
+	if err := h.validateDestination(destination); err != nil {
 		return nil, err
 	}
 
@@ -368,7 +371,7 @@ func (h *directTCPHandler) readUDPOverTCPRequest(conn net.Conn, destination M.So
 			return nil, fmt.Errorf("%w: %w", errInvalidUDPOverTCPRequest, err)
 		}
 		if request.IsConnect {
-			if err := h.validatePacketDestination(request.Destination); err != nil {
+			if err := h.validateDestination(request.Destination); err != nil {
 				return nil, err
 			}
 		}
@@ -380,17 +383,7 @@ func (h *directTCPHandler) readUDPOverTCPRequest(conn net.Conn, destination M.So
 	}
 }
 
-func (h *directTCPHandler) validateStreamDestination(destination M.Socksaddr) error {
-	if !destination.IsValid() || destination.Port == 0 {
-		return fmt.Errorf("%w", errInvalidDestination)
-	}
-	if !h.config.AllowPrivateTargets && isPrivateDestination(destination) {
-		return fmt.Errorf("%w: %s", errPrivateDestinationDenied, destination.String())
-	}
-	return nil
-}
-
-func (h *directTCPHandler) validatePacketDestination(destination M.Socksaddr) error {
+func (h *directTCPHandler) validateDestination(destination M.Socksaddr) error {
 	if !destination.IsValid() || destination.Port == 0 {
 		return fmt.Errorf("%w", errInvalidDestination)
 	}

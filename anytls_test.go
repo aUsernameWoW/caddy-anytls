@@ -938,35 +938,6 @@ func TestAnyTLSEndToEndUDPOverTCPDatagramMode(t *testing.T) {
 	}
 }
 
-func TestIdleTimeoutConnResetsDeadlineOnRead(t *testing.T) {
-	server, client := net.Pipe()
-	defer client.Close()
-
-	wrapped := newIdleTimeoutConn(server, 100*time.Millisecond)
-
-	// Write past the would-be hard deadline; if idle timeout reset on each
-	// Read, the conn stays usable as long as activity continues.
-	go func() {
-		for i := 0; i < 5; i++ {
-			time.Sleep(50 * time.Millisecond)
-			_, _ = client.Write([]byte{byte(i)})
-		}
-		_ = client.Close()
-	}()
-
-	buf := make([]byte, 1)
-	for i := 0; i < 5; i++ {
-		n, err := wrapped.Read(buf)
-		if err != nil {
-			t.Fatalf("Read[%d] error = %v (idle timeout fired despite activity)", i, err)
-		}
-		if n != 1 || buf[0] != byte(i) {
-			t.Fatalf("Read[%d] = %d, %v", i, n, buf[:n])
-		}
-	}
-	_ = wrapped.Close()
-}
-
 func TestUnmarshalCaddyfileFallbackFalseSticksAfterProvision(t *testing.T) {
 	dispenser := caddyfile.NewTestDispenser(`
 	anytls {
@@ -1005,6 +976,35 @@ func TestProvisionDefaultsFallbackTrueWhenUnset(t *testing.T) {
 	if !wrapper.fallbackEnabled() {
 		t.Fatal("fallbackEnabled() = false when Fallback unset; default should be true")
 	}
+}
+
+func TestIdleTimeoutConnResetsDeadlineOnRead(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+
+	wrapped := newIdleTimeoutConn(server, 100*time.Millisecond)
+
+	// Write past the would-be hard deadline; if idle timeout reset on each
+	// Read, the conn stays usable as long as activity continues.
+	go func() {
+		for i := 0; i < 5; i++ {
+			time.Sleep(50 * time.Millisecond)
+			_, _ = client.Write([]byte{byte(i)})
+		}
+		_ = client.Close()
+	}()
+
+	buf := make([]byte, 1)
+	for i := 0; i < 5; i++ {
+		n, err := wrapped.Read(buf)
+		if err != nil {
+			t.Fatalf("Read[%d] error = %v (idle timeout fired despite activity)", i, err)
+		}
+		if n != 1 || buf[0] != byte(i) {
+			t.Fatalf("Read[%d] = %d, %v", i, n, buf[:n])
+		}
+	}
+	_ = wrapped.Close()
 }
 
 func TestUnmarshalCaddyfile(t *testing.T) {
@@ -1367,6 +1367,7 @@ func newTestWrapper(t *testing.T, users []User, allowPrivateTargets bool) *Liste
 		PaddingScheme:       string(padding.DefaultPaddingScheme),
 		logger:              zap.NewNop(),
 		registry:            newSessionRegistry(),
+		websiteConns:        &sync.Map{},
 	}
 	wrapper.detector = NewPasswordHashDetector(wrapper.Users)
 

@@ -28,144 +28,20 @@ func (wl *wrappedListener) Accept() (net.Conn, error) {
 
 		if tlsConn, ok := conn.(*tls.Conn); ok {
 			if err := wl.handshakeTLSConn(tlsConn); err != nil {
-				wl.config.logger.Warn("connection rejected during anytls probe",
-					zap.Uint64("connection_id", connectionID),
-					zap.String("remote", conn.RemoteAddr().String()),
-					zap.String("event", "anytls_probe"),
-					zap.String("outcome", "rejected"),
-					zap.String("reason", "tls_handshake_failed"),
-					zap.Error(err),
-				)
+				wl.logProbeRejected(connectionID, conn, "tls_handshake_failed", err)
 				_ = conn.Close()
 				continue
-			}
-			buffered := newBufferedConn(tlsConn)
-			decision, detectErr := wl.classifyBufferedConn(buffered)
-
-			switch {
-			case detectErr != nil && decision == DecisionFallback && wl.config.fallbackEnabled():
-				wl.config.logFallback(conn, detectErr)
-				websiteConn, err := wl.config.prepareWebsiteConn(buffered)
-				if err != nil {
-					return nil, fmt.Errorf("prepare fallback connection: %w", err)
-				}
-				return websiteConn, nil
-			case detectErr != nil && decision == DecisionReject:
-				wl.config.logger.Warn("connection rejected during anytls probe",
-					zap.Uint64("connection_id", connectionID),
-					zap.String("remote", conn.RemoteAddr().String()),
-					zap.String("event", "anytls_probe"),
-					zap.String("outcome", "rejected"),
-					zap.String("reason", probeFailureReason(detectErr)),
-					zap.Error(detectErr),
-				)
-				_ = conn.Close()
-				continue
-			case detectErr != nil:
-				wl.config.logger.Warn("connection rejected during anytls probe",
-					zap.Uint64("connection_id", connectionID),
-					zap.String("remote", conn.RemoteAddr().String()),
-					zap.String("event", "anytls_probe"),
-					zap.String("outcome", "rejected"),
-					zap.String("reason", probeFailureReason(detectErr)),
-					zap.Error(detectErr),
-				)
-				_ = conn.Close()
-				continue
-			case decision == DecisionFallback:
-				wl.config.logger.Debug("connection routed to website",
-					zap.Uint64("connection_id", connectionID),
-					zap.String("remote", conn.RemoteAddr().String()),
-					zap.String("event", "fallback"),
-					zap.String("outcome", "fallback"),
-				)
-				websiteConn, err := wl.config.prepareWebsiteConn(buffered)
-				if err != nil {
-					return nil, fmt.Errorf("prepare fallback connection: %w", err)
-				}
-				return websiteConn, nil
-			case decision == DecisionReject:
-				wl.config.logger.Warn("connection rejected by anytls detector",
-					zap.Uint64("connection_id", connectionID),
-					zap.String("remote", conn.RemoteAddr().String()),
-					zap.String("event", "anytls_probe"),
-					zap.String("outcome", "rejected"),
-				)
-				_ = conn.Close()
-				continue
-			case decision == DecisionAnyTLS:
-				if !wl.config.acquire() {
-					wl.config.logger.Warn("rejecting AnyTLS connection due to concurrency limit",
-						zap.String("remote", conn.RemoteAddr().String()),
-					)
-					_ = conn.Close()
-					continue
-				}
-				wl.config.logger.Debug("connection detected as anytls",
-					zap.Uint64("connection_id", connectionID),
-					zap.String("remote", conn.RemoteAddr().String()),
-					zap.String("event", "anytls_probe"),
-					zap.String("outcome", "anytls"),
-				)
-				go wl.serveAnyTLS(buffered, connectionID)
-				continue
-			default:
-				websiteConn, err := wl.config.prepareWebsiteConn(buffered)
-				if err != nil {
-					return nil, fmt.Errorf("prepare fallback connection: %w", err)
-				}
-				return websiteConn, nil
 			}
 		}
 
 		buffered := newBufferedConn(conn)
 		decision, detectErr := wl.classifyBufferedConn(buffered)
-		switch {
-		case detectErr != nil && decision == DecisionFallback && wl.config.fallbackEnabled():
-			wl.config.logFallback(conn, detectErr)
-			return buffered, nil
-		case detectErr != nil && decision == DecisionReject:
-			wl.config.logger.Warn("connection rejected during anytls probe",
-				zap.Uint64("connection_id", connectionID),
-				zap.String("remote", conn.RemoteAddr().String()),
-				zap.String("event", "anytls_probe"),
-				zap.String("outcome", "rejected"),
-				zap.String("reason", probeFailureReason(detectErr)),
-				zap.Error(detectErr),
-			)
-			_ = conn.Close()
-			continue
-		case detectErr != nil:
-			wl.config.logger.Warn("connection rejected during anytls probe",
-				zap.Uint64("connection_id", connectionID),
-				zap.String("remote", conn.RemoteAddr().String()),
-				zap.String("event", "anytls_probe"),
-				zap.String("outcome", "rejected"),
-				zap.String("reason", probeFailureReason(detectErr)),
-				zap.Error(detectErr),
-			)
-			_ = conn.Close()
-			continue
-		case decision == DecisionFallback:
-			wl.config.logger.Debug("connection routed to website",
-				zap.Uint64("connection_id", connectionID),
-				zap.String("remote", conn.RemoteAddr().String()),
-				zap.String("event", "fallback"),
-				zap.String("outcome", "fallback"),
-			)
-			return buffered, nil
-		case decision == DecisionReject:
-			wl.config.logger.Warn("connection rejected by anytls detector",
-				zap.Uint64("connection_id", connectionID),
-				zap.String("remote", conn.RemoteAddr().String()),
-				zap.String("event", "anytls_probe"),
-				zap.String("outcome", "rejected"),
-			)
-			_ = conn.Close()
-			continue
-		case decision == DecisionAnyTLS:
+
+		switch decision {
+		case DecisionAnyTLS:
 			if !wl.config.acquire() {
 				wl.config.logger.Warn("rejecting AnyTLS connection due to concurrency limit",
+					zap.Uint64("connection_id", connectionID),
 					zap.String("remote", conn.RemoteAddr().String()),
 				)
 				_ = conn.Close()
@@ -179,10 +55,53 @@ func (wl *wrappedListener) Accept() (net.Conn, error) {
 			)
 			go wl.serveAnyTLS(buffered, connectionID)
 			continue
+
+		case DecisionReject:
+			wl.logProbeRejected(connectionID, conn, probeFailureReason(detectErr), detectErr)
+			_ = conn.Close()
+			continue
+
+		case DecisionFallback:
+			if !wl.config.fallbackEnabled() {
+				wl.logProbeRejected(connectionID, conn, probeFailureReason(detectErr), detectErr)
+				_ = conn.Close()
+				continue
+			}
+			if detectErr != nil {
+				wl.config.logFallback(conn, detectErr)
+			} else {
+				wl.config.logger.Debug("connection routed to website",
+					zap.Uint64("connection_id", connectionID),
+					zap.String("remote", conn.RemoteAddr().String()),
+					zap.String("event", "fallback"),
+					zap.String("outcome", "fallback"),
+				)
+			}
+			websiteConn, err := wl.config.prepareWebsiteConn(buffered)
+			if err != nil {
+				return nil, fmt.Errorf("prepare fallback connection: %w", err)
+			}
+			return websiteConn, nil
+
 		default:
-			return buffered, nil
+			// Unknown decision values are treated as fallback to website if
+			// allowed, otherwise the connection is closed. Defensive against
+			// future detector implementations.
+			_ = conn.Close()
+			continue
 		}
 	}
+}
+
+func (wl *wrappedListener) logProbeRejected(connectionID uint64, conn net.Conn, reason string, err error) {
+	wl.config.logger.Warn("connection rejected during anytls probe",
+		zap.Uint64("connection_id", connectionID),
+		zap.String("remote", conn.RemoteAddr().String()),
+		zap.String("event", "anytls_probe"),
+		zap.String("outcome", "rejected"),
+		zap.String("reason", reason),
+		zap.Error(err),
+	)
 }
 
 func (wl *wrappedListener) handshakeTLSConn(conn *tls.Conn) error {
