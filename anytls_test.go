@@ -938,6 +938,46 @@ func TestAnyTLSEndToEndUDPOverTCPDatagramMode(t *testing.T) {
 	}
 }
 
+func TestUnmarshalCaddyfileFallbackFalseSticksAfterProvision(t *testing.T) {
+	dispenser := caddyfile.NewTestDispenser(`
+	anytls {
+		fallback false
+		user alice secret
+	}
+	`)
+
+	var wrapper ListenerWrapper
+	if err := wrapper.UnmarshalCaddyfile(dispenser); err != nil {
+		t.Fatalf("UnmarshalCaddyfile() error = %v", err)
+	}
+	if wrapper.Fallback == nil || *wrapper.Fallback != false {
+		t.Fatalf("Fallback after Caddyfile parse = %v, want explicit false", wrapper.Fallback)
+	}
+
+	ctx, cancel := caddy.NewContext(caddy.Context{Context: context.Background()})
+	defer cancel()
+	if err := wrapper.Provision(ctx); err != nil {
+		t.Fatalf("Provision() error = %v", err)
+	}
+	if wrapper.fallbackEnabled() {
+		t.Fatal("fallbackEnabled() = true after explicit fallback=false; default override regression")
+	}
+}
+
+func TestProvisionDefaultsFallbackTrueWhenUnset(t *testing.T) {
+	wrapper := &ListenerWrapper{
+		Users: []User{{Name: "alice", Password: "secret", Enabled: true}},
+	}
+	ctx, cancel := caddy.NewContext(caddy.Context{Context: context.Background()})
+	defer cancel()
+	if err := wrapper.Provision(ctx); err != nil {
+		t.Fatalf("Provision() error = %v", err)
+	}
+	if !wrapper.fallbackEnabled() {
+		t.Fatal("fallbackEnabled() = false when Fallback unset; default should be true")
+	}
+}
+
 func TestUnmarshalCaddyfile(t *testing.T) {
 	dispenser := caddyfile.NewTestDispenser(`
 	anytls {
@@ -968,7 +1008,7 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 	if wrapper.MaxConcurrent != 64 {
 		t.Fatalf("MaxConcurrent = %d, want %d", wrapper.MaxConcurrent, 64)
 	}
-	if !wrapper.Fallback {
+	if wrapper.Fallback == nil || !*wrapper.Fallback {
 		t.Fatal("Fallback = false, want true")
 	}
 	if wrapper.AllowPrivateTargets {
@@ -1286,13 +1326,14 @@ example.com {
 func newTestWrapper(t *testing.T, users []User, allowPrivateTargets bool) *ListenerWrapper {
 	t.Helper()
 
+	fallback := true
 	wrapper := &ListenerWrapper{
 		Users:               users,
 		ProbeTimeout:        caddy.Duration(250 * time.Millisecond),
 		IdleTimeout:         caddy.Duration(2 * time.Second),
 		ConnectTimeout:      caddy.Duration(time.Second),
 		MaxConcurrent:       8,
-		Fallback:            true,
+		Fallback:            &fallback,
 		AllowPrivateTargets: allowPrivateTargets,
 		PaddingScheme:       string(padding.DefaultPaddingScheme),
 		logger:              zap.NewNop(),

@@ -43,7 +43,7 @@ func (wl *wrappedListener) Accept() (net.Conn, error) {
 			decision, detectErr := wl.classifyBufferedConn(buffered)
 
 			switch {
-			case detectErr != nil && decision == DecisionFallback && wl.config.Fallback:
+			case detectErr != nil && decision == DecisionFallback && wl.config.fallbackEnabled():
 				wl.config.logFallback(conn, detectErr)
 				websiteConn, err := wl.config.prepareWebsiteConn(buffered)
 				if err != nil {
@@ -121,7 +121,7 @@ func (wl *wrappedListener) Accept() (net.Conn, error) {
 		buffered := newBufferedConn(conn)
 		decision, detectErr := wl.classifyBufferedConn(buffered)
 		switch {
-		case detectErr != nil && decision == DecisionFallback && wl.config.Fallback:
+		case detectErr != nil && decision == DecisionFallback && wl.config.fallbackEnabled():
 			wl.config.logFallback(conn, detectErr)
 			return buffered, nil
 		case detectErr != nil && decision == DecisionReject:

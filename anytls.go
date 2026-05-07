@@ -41,7 +41,7 @@ type ListenerWrapper struct {
 	IdleTimeout         caddy.Duration `json:"idle_timeout,omitempty"`
 	ConnectTimeout      caddy.Duration `json:"connect_timeout,omitempty"`
 	MaxConcurrent       int            `json:"max_concurrent,omitempty"`
-	Fallback            bool           `json:"fallback,omitempty"`
+	Fallback            *bool          `json:"fallback,omitempty"`
 	AllowPrivateTargets bool           `json:"allow_private_targets,omitempty"`
 	PaddingScheme       string         `json:"padding_scheme,omitempty"`
 
@@ -87,8 +87,9 @@ func (lw *ListenerWrapper) Provision(ctx caddy.Context) error {
 	if lw.MaxConcurrent == 0 {
 		lw.MaxConcurrent = 128
 	}
-	if !lw.Fallback {
-		lw.Fallback = true
+	if lw.Fallback == nil {
+		enabled := true
+		lw.Fallback = &enabled
 	}
 	if lw.PaddingScheme == "" {
 		lw.PaddingScheme = string(padding.DefaultPaddingScheme)
@@ -205,7 +206,7 @@ func (lw *ListenerWrapper) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			if err != nil {
 				return err
 			}
-			lw.Fallback = value
+			lw.Fallback = &value
 
 		case "allow_private_targets":
 			value, err := parseBoolDirective(d, "allow_private_targets")
@@ -245,6 +246,10 @@ var (
 	_ caddy.ListenerWrapper = (*ListenerWrapper)(nil)
 	_ caddyfile.Unmarshaler = (*ListenerWrapper)(nil)
 )
+
+func (lw *ListenerWrapper) fallbackEnabled() bool {
+	return lw.Fallback != nil && *lw.Fallback
+}
 
 func (lw *ListenerWrapper) anyTLSUsers() []singanytls.User {
 	users := make([]singanytls.User, 0, len(lw.Users))
