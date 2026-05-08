@@ -42,6 +42,29 @@ example.com {
 - 该字段主要用于设备区分、日志记录和用户管理
 - 协议认证仍以密码为核心
 
+## 上游 SOCKS5 出站
+
+如果想让 anytls 落地的流量统一从一个本地代理出去，加一行 `upstream` 即可：
+
+```caddyfile
+{
+    servers :443 {
+        listener_wrappers {
+            anytls {
+                user phone-1 replace-with-strong-password
+                upstream socks5://127.0.0.1:1080
+            }
+        }
+    }
+}
+```
+
+行为：
+
+- TCP 出站走 SOCKS5 CONNECT
+- UDP-over-TCP 出站走 SOCKS5 UDP ASSOCIATE（同一条上游 TCP 控制连接）
+- 不支持 `http://` / `https://` / `socks4://`——HTTP CONNECT 不能承 UDP，SOCKS4 协议本身不支持 UDP，配置加载时直接拒绝以避免 UDP 偷偷直连绕过审计
+
 ## JSON 配置片段
 
 如果使用 JSON 配置，模块需要挂载在 HTTP server 的 `listener_wrappers` 下。示例如下：
@@ -55,6 +78,7 @@ example.com {
   "max_concurrent": 128,
   "fallback": true,
   "allow_private_targets": false,
+  "upstream": "socks5://127.0.0.1:1080",
   "users": [
     {
       "name": "phone-1",
@@ -83,6 +107,7 @@ example.com {
 | `fallback` | `true` | 非 AnyTLS 流量回落网站 |
 | `allow_private_targets` | `false` | 默认拒绝常见私网目标 |
 | `padding_scheme` | `sing-anytls` 默认值 | 复用上游协议实现的默认策略 |
+| `upstream` | 无（直连） | 配置后所有 anytls 出站走该 SOCKS5 上游，TCP 走 CONNECT、UDP 走 UDP ASSOCIATE |
 
 默认值的代码来源分别位于：
 

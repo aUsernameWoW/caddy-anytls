@@ -133,6 +133,7 @@ docker compose up -d --build
 | `allow_private_targets`  | `false`              | 是否允许访问常见私网目标   |
 | `padding_scheme`         | `sing-anytls` 默认值 | AnyTLS padding 策略        |
 | `user <name> <password>` | 无                   | 添加一个启用状态的用户     |
+| `upstream <url>`         | 无（直连）           | 把 anytls 出站全部转给一个上游 SOCKS5 代理（详见下文） |
 
 `name` 是这个模块里的运维标识，不是协议层强制字段。它主要用于区分设备、管理用户和标记日志。
 
@@ -149,6 +150,7 @@ docker compose up -d --build
   "max_concurrent": 128,
   "fallback": true,
   "allow_private_targets": false,
+  "upstream": "socks5://127.0.0.1:1080",
   "users": [
     {
       "name": "phone-1",
@@ -158,6 +160,27 @@ docker compose up -d --build
   ]
 }
 ```
+
+`upstream` 不需要时省略即可，省略时所有出站直连。
+
+### 上游代理 (upstream)
+
+如果希望 anytls 落地的所有出站流量统一走一个本地代理，可以配置 `upstream`。
+
+支持的 scheme：
+
+- `socks5://[user:pass@]host:port`（推荐写法）
+- `socks://...`（等价于 `socks5://`）
+
+行为：
+
+- **TCP** 出站走 SOCKS5 CONNECT
+- **UDP**（`UDP over TCP v2`）出站走 SOCKS5 UDP ASSOCIATE
+- 两者复用同一条 TCP 控制连接，UDP session 结束时一并清理
+
+不支持 `http://` / `https://` / `socks4://`：HTTP CONNECT 不能承 UDP，而 SOCKS4 协议本身不支持 UDP——为了避免审计场景下出现"UDP 偷偷直连"，这些 scheme 在配置加载时直接拒绝。
+
+`allow_private_targets` 仍然按原意作用：它管的是 anytls 客户端**请求**的目标地址是否允许私网，而不是上游代理本身的可达性。
 
 ## 当前行为
 

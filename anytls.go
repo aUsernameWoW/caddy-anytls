@@ -11,8 +11,10 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -44,6 +46,10 @@ type ListenerWrapper struct {
 	Fallback            *bool          `json:"fallback,omitempty"`
 	AllowPrivateTargets bool           `json:"allow_private_targets,omitempty"`
 	PaddingScheme       string         `json:"padding_scheme,omitempty"`
+	// Upstream, if set, routes all outbound TCP and UDP through a proxy
+	// instead of dialing directly. Only socks5:// (and socks://) is supported
+	// in v1 — both TCP CONNECT and UDP ASSOCIATE go through the same upstream.
+	Upstream string `json:"upstream,omitempty"`
 
 	logger           *zap.Logger
 	active           int64
@@ -110,6 +116,20 @@ func (lw *ListenerWrapper) Provision(ctx caddy.Context) error {
 
 	lw.detector = NewPasswordHashDetector(lw.Users)
 
+	if lw.Upstream != "" {
+		ob, err := newOutbound(lw.Upstream)
+		if err != nil {
+			return fmt.Errorf("configure upstream: %w", err)
+		}
+		lw.dialFunc = ob.DialContext
+		lw.listenPacketFunc = ob.ListenPacket
+		upstreamURL, _ := url.Parse(lw.Upstream)
+		lw.logger.Info("anytls outbound upstream configured",
+			zap.String("scheme", upstreamURL.Scheme),
+			zap.String("address", upstreamURL.Host),
+		)
+	}
+
 	service, err := singanytls.NewService(singanytls.ServiceConfig{
 		PaddingScheme: []byte(lw.PaddingScheme),
 		Users:         lw.anyTLSUsers(),
@@ -137,6 +157,23 @@ func (lw *ListenerWrapper) Validate() error {
 	}
 	if lw.ConnectTimeout < 0 {
 		return fmt.Errorf("connect_timeout must be non-negative")
+	}
+
+	if lw.Upstream != "" {
+		u, err := url.Parse(lw.Upstream)
+		if err != nil {
+			return fmt.Errorf("parse upstream URL: %w", err)
+		}
+		switch strings.ToLower(u.Scheme) {
+		case "socks", "socks5":
+		case "":
+			return fmt.Errorf("upstream URL missing scheme")
+		default:
+			return fmt.Errorf("unsupported upstream scheme %q (supported: socks5)", u.Scheme)
+		}
+		if u.Host == "" {
+			return fmt.Errorf("upstream URL missing host")
+		}
 	}
 
 	seen := make([]string, 0, len(lw.Users))
@@ -234,6 +271,12 @@ func (lw *ListenerWrapper) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				Password: args[1],
 				Enabled:  true,
 			})
+
+		case "upstream":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			lw.Upstream = d.Val()
 
 		default:
 			return d.ArgErr()
