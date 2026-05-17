@@ -63,7 +63,14 @@ func (wl *wrappedListener) Accept() (net.Conn, error) {
 
 		case DecisionFallback:
 			if !wl.config.fallbackEnabled() {
-				wl.logProbeRejected(connectionID, conn, probeFailureReason(detectErr), detectErr)
+				// detectErr == nil here means a clean non-AnyTLS connection
+				// (e.g. an empty/aborted preview), not a probe failure —
+				// don't mislabel it as probe_error with a nil error field.
+				reason := "fallback_disabled"
+				if detectErr != nil {
+					reason = probeFailureReason(detectErr)
+				}
+				wl.logProbeRejected(connectionID, conn, reason, detectErr)
 				_ = conn.Close()
 				continue
 			}
@@ -84,9 +91,9 @@ func (wl *wrappedListener) Accept() (net.Conn, error) {
 			return websiteConn, nil
 
 		default:
-			// Unknown decision values are treated as fallback to website if
-			// allowed, otherwise the connection is closed. Defensive against
-			// future detector implementations.
+			// Unknown/unexpected decision values fail closed: the connection
+			// is always dropped, regardless of the fallback setting.
+			// Defensive against future detector implementations.
 			_ = conn.Close()
 			continue
 		}
@@ -94,14 +101,17 @@ func (wl *wrappedListener) Accept() (net.Conn, error) {
 }
 
 func (wl *wrappedListener) logProbeRejected(connectionID uint64, conn net.Conn, reason string, err error) {
-	wl.config.logger.Warn("connection rejected during anytls probe",
+	fields := []zap.Field{
 		zap.Uint64("connection_id", connectionID),
 		zap.String("remote", conn.RemoteAddr().String()),
 		zap.String("event", "anytls_probe"),
 		zap.String("outcome", "rejected"),
 		zap.String("reason", reason),
-		zap.Error(err),
-	)
+	}
+	if err != nil {
+		fields = append(fields, zap.Error(err))
+	}
+	wl.config.logger.Warn("connection rejected during anytls probe", fields...)
 }
 
 func (wl *wrappedListener) handshakeTLSConn(conn *tls.Conn) error {

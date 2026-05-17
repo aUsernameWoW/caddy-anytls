@@ -12,7 +12,7 @@ import (
 	"github.com/sagernet/sing/common/uot"
 )
 
-func relayUDPOverTCP(ctx context.Context, inbound *uot.Conn, outbound net.PacketConn, validate func(M.Socksaddr) error, onClose N.CloseHandlerFunc) {
+func relayUDPOverTCP(ctx context.Context, inbound *uot.Conn, outbound net.PacketConn, resolveFQDNRemotely bool, validate func(M.Socksaddr) error, onClose N.CloseHandlerFunc) {
 	var once sync.Once
 	closeAll := func(err error) {
 		once.Do(func() {
@@ -30,14 +30,14 @@ func relayUDPOverTCP(ctx context.Context, inbound *uot.Conn, outbound net.Packet
 	}()
 
 	go func() {
-		closeAll(proxyUOTToPacket(inbound, outbound, validate))
+		closeAll(proxyUOTToPacket(inbound, outbound, resolveFQDNRemotely, validate))
 	}()
 	go func() {
 		closeAll(proxyPacketToUOT(outbound, inbound))
 	}()
 }
 
-func proxyUOTToPacket(inbound *uot.Conn, outbound net.PacketConn, validate func(M.Socksaddr) error) error {
+func proxyUOTToPacket(inbound *uot.Conn, outbound net.PacketConn, resolveFQDNRemotely bool, validate func(M.Socksaddr) error) error {
 	packet := buf.NewPacket()
 	defer packet.Release()
 
@@ -51,7 +51,7 @@ func proxyUOTToPacket(inbound *uot.Conn, outbound net.PacketConn, validate func(
 			return err
 		}
 
-		addr, err := resolveUDPAddr(destination)
+		addr, err := resolveUDPAddr(destination, resolveFQDNRemotely)
 		if err != nil {
 			return fmt.Errorf("resolve udp destination %s: %w", destination.String(), err)
 		}
@@ -77,9 +77,17 @@ func proxyPacketToUOT(inbound net.PacketConn, outbound *uot.Conn) error {
 	}
 }
 
-func resolveUDPAddr(destination M.Socksaddr) (net.Addr, error) {
+func resolveUDPAddr(destination M.Socksaddr, resolveFQDNRemotely bool) (net.Addr, error) {
 	if destination.Addr.IsValid() {
 		return destination.UDPAddr(), nil
+	}
+	if resolveFQDNRemotely {
+		// destination is an FQDN and an upstream is configured. Hand the
+		// Socksaddr through unchanged: sing's SOCKS5 packet conn emits the
+		// domain ATYP and the upstream resolves it, mirroring the TCP
+		// CONNECT path. Resolving here would leak the DNS query off the
+		// landing host and bypass the upstream/audit.
+		return destination, nil
 	}
 	return net.ResolveUDPAddr("udp", destination.String())
 }

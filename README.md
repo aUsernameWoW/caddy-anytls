@@ -176,7 +176,7 @@ docker compose up -d --build
 
 - **TCP** 出站走 SOCKS5 CONNECT
 - **UDP**（`UDP over TCP v2`）出站走 SOCKS5 UDP ASSOCIATE
-- 两者复用同一条 TCP 控制连接，UDP session 结束时一并清理
+- 每个 TCP CONNECT、每个 UDP ASSOCIATE 各自建立独立的上游连接，由该请求的 conn 持有，conn 关闭时一并清理（UDP ASSOCIATE 的 TCP 控制连接随 UDP session 结束而关闭）
 
 不支持 `http://` / `https://` / `socks4://`：HTTP CONNECT 不能承 UDP，而 SOCKS4 协议本身不支持 UDP——为了避免审计场景下出现"UDP 偷偷直连"，这些 scheme 在配置加载时直接拒绝。
 

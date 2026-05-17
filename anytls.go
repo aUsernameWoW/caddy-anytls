@@ -380,7 +380,12 @@ func (h *directTCPHandler) handleUDPOverTCP(ctx context.Context, conn net.Conn, 
 		zap.String("destination", request.Destination.String()),
 	)
 
-	relayUDPOverTCP(ctx, uotConn, packetConn, h.validateDestination, closeOnce)
+	// When an upstream is configured the SOCKS5 layer resolves FQDN targets
+	// remotely (domain ATYP); resolving them here would leak the DNS query
+	// off the landing host and bypass the upstream/audit. The direct path
+	// has no such layer, so FQDNs must still be resolved locally there.
+	resolveFQDNRemotely := h.config.listenPacketFunc != nil
+	relayUDPOverTCP(ctx, uotConn, packetConn, resolveFQDNRemotely, h.validateDestination, closeOnce)
 }
 
 func (h *directTCPHandler) dialContext(ctx context.Context, destination M.Socksaddr) (net.Conn, error) {
@@ -388,17 +393,37 @@ func (h *directTCPHandler) dialContext(ctx context.Context, destination M.Socksa
 		return nil, err
 	}
 
+	if h.config.dialFunc != nil {
+		// The custom dialer's Timeout below is only honored on the direct
+		// path, so apply the configured connect_timeout via the context
+		// instead. sing's socks client uses ctx only during dial setup, so
+		// cancelling once the dial returns does not affect the conn.
+		ctx, cancel := h.dialTimeoutContext(ctx)
+		defer cancel()
+		return h.config.dialFunc(ctx, "tcp", destination.String())
+	}
 	dialer := &net.Dialer{
 		Timeout: time.Duration(h.config.ConnectTimeout),
-	}
-	if h.config.dialFunc != nil {
-		return h.config.dialFunc(ctx, "tcp", destination.String())
 	}
 	return dialer.DialContext(ctx, "tcp", destination.String())
 }
 
+// dialTimeoutContext derives a child context bounded by the configured
+// connect_timeout. When the timeout is unset it returns a no-op cancel so
+// callers can unconditionally defer cancel().
+func (h *directTCPHandler) dialTimeoutContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if h.config.ConnectTimeout > 0 {
+		return context.WithTimeout(ctx, time.Duration(h.config.ConnectTimeout))
+	}
+	return ctx, func() {}
+}
+
 func (h *directTCPHandler) listenPacketContext(ctx context.Context) (net.PacketConn, error) {
 	if h.config.listenPacketFunc != nil {
+		// Same rationale as dialContext: bound the SOCKS5 UDP-ASSOCIATE
+		// setup by connect_timeout via the context.
+		ctx, cancel := h.dialTimeoutContext(ctx)
+		defer cancel()
 		return h.config.listenPacketFunc(ctx, "udp", "")
 	}
 

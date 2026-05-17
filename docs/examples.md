@@ -62,7 +62,7 @@ example.com {
 行为：
 
 - TCP 出站走 SOCKS5 CONNECT
-- UDP-over-TCP 出站走 SOCKS5 UDP ASSOCIATE（同一条上游 TCP 控制连接）
+- UDP-over-TCP 出站走 SOCKS5 UDP ASSOCIATE（每个请求各自建立独立的上游连接，请求结束时关闭）
 - 不支持 `http://` / `https://` / `socks4://`——HTTP CONNECT 不能承 UDP，SOCKS4 协议本身不支持 UDP，配置加载时直接拒绝以避免 UDP 偷偷直连绕过审计
 
 ## JSON 配置片段
