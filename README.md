@@ -134,6 +134,7 @@ docker compose up -d --build
 | `padding_scheme`         | `sing-anytls` 默认值 | AnyTLS padding 策略        |
 | `user <name> <password>` | 无                   | 添加一个启用状态的用户     |
 | `upstream <url>`         | 无（直连）           | 把 anytls 出站全部转给一个上游 SOCKS5 代理（详见下文） |
+| `passthrough_uot`        | `false`              | UoT 魔法地址 CONNECT 原样透传给上游（需上游懂 UoT），不再本地解码 UDP |
 
 `name` 是这个模块里的运维标识，不是协议层强制字段。它主要用于区分设备、管理用户和标记日志。
 

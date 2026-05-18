@@ -50,6 +50,16 @@ type ListenerWrapper struct {
 	// instead of dialing directly. Only socks5:// (and socks://) is supported
 	// in v1 — both TCP CONNECT and UDP ASSOCIATE go through the same upstream.
 	Upstream string `json:"upstream,omitempty"`
+	// PassthroughUoT, when true (and Upstream is socks5://), forwards the
+	// sing UoT magic-address CONNECT verbatim to the upstream instead of
+	// decoding it into real UDP locally. Useful when the upstream is itself
+	// UoT-aware (e.g. sing-box): it terminates the UoT framing and observes
+	// the UDP, so this side does no UDP ASSOCIATE and the SOCKS5-UDP
+	// domain-ATYP interop surface disappears. Trade-off: the upstream only
+	// sees an opaque CONNECT to the magic address, so per-datagram UDP audit
+	// on the upstream is bypassed. Defaults to off — clean installs and the
+	// default decode path are unaffected.
+	PassthroughUoT bool `json:"passthrough_uot,omitempty"`
 
 	logger           *zap.Logger
 	active           int64
@@ -176,6 +186,10 @@ func (lw *ListenerWrapper) Validate() error {
 		}
 	}
 
+	if lw.PassthroughUoT && lw.Upstream == "" {
+		return fmt.Errorf("passthrough_uot requires a socks5 upstream to be configured")
+	}
+
 	seen := make([]string, 0, len(lw.Users))
 	for _, user := range lw.Users {
 		if user.Name == "" {
@@ -278,6 +292,12 @@ func (lw *ListenerWrapper) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			}
 			lw.Upstream = d.Val()
 
+		case "passthrough_uot":
+			if d.NextArg() {
+				return d.ArgErr()
+			}
+			lw.PassthroughUoT = true
+
 		default:
 			return d.ArgErr()
 		}
@@ -326,6 +346,10 @@ func (h *directTCPHandler) NewConnectionEx(ctx context.Context, conn net.Conn, s
 	})
 
 	if isUDPOverTCPDestination(destination) {
+		if h.config.PassthroughUoT && h.config.dialFunc != nil {
+			h.handleUoTPassthrough(ctx, conn, source, destination, startedAt, connectionID, closeOnce)
+			return
+		}
 		h.handleUDPOverTCP(ctx, conn, source, destination, startedAt, connectionID, closeOnce)
 		return
 	}
@@ -394,18 +418,55 @@ func (h *directTCPHandler) dialContext(ctx context.Context, destination M.Socksa
 	}
 
 	if h.config.dialFunc != nil {
-		// The custom dialer's Timeout below is only honored on the direct
-		// path, so apply the configured connect_timeout via the context
-		// instead. sing's socks client uses ctx only during dial setup, so
-		// cancelling once the dial returns does not affect the conn.
-		ctx, cancel := h.dialTimeoutContext(ctx)
-		defer cancel()
-		return h.config.dialFunc(ctx, "tcp", destination.String())
+		return h.dialUpstreamTCP(ctx, destination)
 	}
 	dialer := &net.Dialer{
 		Timeout: time.Duration(h.config.ConnectTimeout),
 	}
 	return dialer.DialContext(ctx, "tcp", destination.String())
+}
+
+// dialUpstreamTCP dials destination through the configured upstream over TCP.
+// The custom dialer's Timeout is only honored on the direct path, so the
+// configured connect_timeout is applied via the context instead. sing's socks
+// client uses ctx only during dial setup, so cancelling once the dial returns
+// does not affect the conn — callers must therefore pass the original
+// (un-timed) context to any subsequent relay, not this bounded child.
+func (h *directTCPHandler) dialUpstreamTCP(ctx context.Context, destination M.Socksaddr) (net.Conn, error) {
+	ctx, cancel := h.dialTimeoutContext(ctx)
+	defer cancel()
+	return h.config.dialFunc(ctx, "tcp", destination.String())
+}
+
+// handleUoTPassthrough forwards the UoT magic-address CONNECT verbatim to the
+// SOCKS5 upstream instead of decoding UDP locally, so a UoT-aware upstream
+// (e.g. sing-box) terminates the UoT framing and observes the UDP itself.
+// Only reachable when passthrough_uot is set and a SOCKS5 upstream is
+// configured. The magic address carries port 0, which validateDestination
+// (and the stdlib SOCKS5 dialer) reject — sing's socks client behind dialFunc
+// tolerates it, so we dial it directly and deliberately skip
+// validateDestination. relay() gets the original ctx, not the dial-bounded
+// child, so connect_timeout does not tear down the established tunnel.
+func (h *directTCPHandler) handleUoTPassthrough(ctx context.Context, conn net.Conn, source M.Socksaddr, destination M.Socksaddr, startedAt time.Time, connectionID uint64, closeOnce N.CloseHandlerFunc) {
+	outbound, err := h.dialUpstreamTCP(ctx, destination)
+	if err != nil {
+		h.logOutboundFailure(connectionID, source, destination, startedAt, userFromContext(ctx), err)
+		closeOnce(err)
+		_ = conn.Close()
+		return
+	}
+
+	h.config.logger.Info("anytls connection established",
+		zap.Uint64("connection_id", connectionID),
+		zap.String("event", "anytls_session"),
+		zap.String("outcome", "authenticated"),
+		zap.String("protocol", "udp_over_tcp_passthrough"),
+		zap.String("user", userFromContext(ctx)),
+		zap.String("source", source.String()),
+		zap.String("destination", destination.String()),
+	)
+
+	relay(ctx, conn, outbound, closeOnce)
 }
 
 // dialTimeoutContext derives a child context bounded by the configured

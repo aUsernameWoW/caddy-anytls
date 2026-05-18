@@ -65,6 +65,24 @@ example.com {
 - UDP-over-TCP 出站走 SOCKS5 UDP ASSOCIATE（每个请求各自建立独立的上游连接，请求结束时关闭）
 - 不支持 `http://` / `https://` / `socks4://`——HTTP CONNECT 不能承 UDP，SOCKS4 协议本身不支持 UDP，配置加载时直接拒绝以避免 UDP 偷偷直连绕过审计
 
+### UoT 透传（`passthrough_uot`）
+
+当上游本身就懂 sing UoT（例如一个 sing-box 的 SOCKS5 入站），可以加 `passthrough_uot`
+让落地端**不再本地解码 UDP**，而是把 UoT 魔法地址的 CONNECT 原样转给上游，由上游自己终结
+UoT 帧：
+
+```caddyfile
+anytls {
+    user phone-1 replace-with-strong-password
+    upstream socks5://127.0.0.1:8889
+    passthrough_uot
+}
+```
+
+- 好处：这一侧不做 UDP ASSOCIATE，规避了某些 SOCKS5 实现对 UDP 数据报里 domain ATYP 的不兼容
+- 代价：上游只看见一个打到魔法地址的不透明 CONNECT，**逐数据报的 UDP 审计被绕过**——真实 UDP 目的地只有下一跳解得开
+- 约束：需要 `upstream` 为 `socks5://`；未配 upstream 时配置加载直接报错。开关默认关闭，不影响既有的本地解码路径
+
 ## JSON 配置片段
 
 如果使用 JSON 配置，模块需要挂载在 HTTP server 的 `listener_wrappers` 下。示例如下：
@@ -79,6 +97,7 @@ example.com {
   "fallback": true,
   "allow_private_targets": false,
   "upstream": "socks5://127.0.0.1:1080",
+  "passthrough_uot": false,
   "users": [
     {
       "name": "phone-1",
@@ -108,6 +127,7 @@ example.com {
 | `allow_private_targets` | `false` | 默认拒绝常见私网目标 |
 | `padding_scheme` | `sing-anytls` 默认值 | 复用上游协议实现的默认策略 |
 | `upstream` | 无（直连） | 配置后所有 anytls 出站走该 SOCKS5 上游，TCP 走 CONNECT、UDP 走 UDP ASSOCIATE |
+| `passthrough_uot` | `false` | 开启后 UoT 魔法地址 CONNECT 原样透传给上游（需上游懂 UoT，如 sing-box），落地端不再本地解码 UDP；绕过上游逐包 UDP 审计 |
 
 默认值的代码来源分别位于：
 

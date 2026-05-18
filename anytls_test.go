@@ -938,6 +938,108 @@ func TestAnyTLSEndToEndUDPOverTCPDatagramMode(t *testing.T) {
 	}
 }
 
+func TestAnyTLSEndToEndUDPOverTCPPassthrough(t *testing.T) {
+	// Fake UoT-aware upstream (stands in for a sing-box SOCKS5 inbound):
+	// it receives the magic-address CONNECT byte stream verbatim, terminates
+	// the UoT framing itself, and echoes datagrams uppercased.
+	upstreamServer, upstreamClient := net.Pipe()
+	defer upstreamClient.Close()
+
+	gotAddr := make(chan string, 1)
+	udpDone := make(chan error, 1)
+	go func() {
+		defer upstreamServer.Close()
+		request, err := uot.ReadRequest(upstreamServer)
+		if err != nil {
+			udpDone <- err
+			return
+		}
+		pc := uot.NewConn(upstreamServer, *request)
+		buffer := make([]byte, 2048)
+		n, addr, err := pc.ReadFrom(buffer)
+		if err != nil {
+			udpDone <- err
+			return
+		}
+		_, err = pc.WriteTo([]byte(strings.ToUpper(string(buffer[:n]))), addr)
+		udpDone <- err
+	}()
+
+	wrapper := newTestWrapper(t, []User{{Name: "alice", Password: "secret", Enabled: true}}, true)
+	wrapper.PassthroughUoT = true
+	wrapper.dialFunc = func(ctx context.Context, network string, address string) (net.Conn, error) {
+		gotAddr <- address
+		return upstreamClient, nil
+	}
+	// Passthrough must not touch the UDP-ASSOCIATE path at all.
+	wrapper.listenPacketFunc = func(ctx context.Context, network string, address string) (net.PacketConn, error) {
+		t.Errorf("listenPacketFunc called in passthrough mode (network=%q address=%q)", network, address)
+		return nil, errors.New("unexpected UDP ASSOCIATE in passthrough mode")
+	}
+	base := newChanListener()
+	defer base.Close()
+
+	wrapped := wrapper.WrapListener(base)
+	acceptCtx, cancelAccept := context.WithCancel(context.Background())
+	defer cancelAccept()
+	go acceptLoop(acceptCtx, wrapped)
+
+	client, err := singanytls.NewClient(context.Background(), singanytls.ClientConfig{
+		Password:                 "secret",
+		IdleSessionCheckInterval: 100 * time.Millisecond,
+		IdleSessionTimeout:       time.Second,
+		MinIdleSession:           0,
+		DialOut: func(ctx context.Context) (net.Conn, error) {
+			serverConn, clientConn := net.Pipe()
+			base.enqueue(serverConn)
+			return clientConn, nil
+		},
+		Logger: zapLogger{base: zap.NewNop()},
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	defer client.Close()
+
+	uotClient := &uot.Client{
+		Dialer:  anyTLSTestDialer{client: client},
+		Version: uot.Version,
+	}
+
+	uotConn, err := uotClient.DialContext(context.Background(), N.NetworkUDP, M.ParseSocksaddr("1.1.1.1:53"))
+	if err != nil {
+		t.Fatalf("DialContext() error = %v", err)
+	}
+	defer uotConn.Close()
+
+	if _, err := io.WriteString(uotConn, "hello over udp\n"); err != nil {
+		t.Fatalf("WriteString() error = %v", err)
+	}
+
+	reply, err := bufio.NewReader(uotConn).ReadString('\n')
+	if err != nil {
+		t.Fatalf("ReadString() error = %v", err)
+	}
+	if reply != "HELLO OVER UDP\n" {
+		t.Fatalf("reply = %q, want %q", reply, "HELLO OVER UDP\n")
+	}
+
+	// The magic-address CONNECT must reach the upstream verbatim — including
+	// port 0, which validateDestination would otherwise reject.
+	select {
+	case addr := <-gotAddr:
+		if addr != uot.MagicAddress+":0" {
+			t.Fatalf("upstream dialed %q, want %q", addr, uot.MagicAddress+":0")
+		}
+	default:
+		t.Fatalf("dialFunc was not called — passthrough did not route to the upstream")
+	}
+
+	if err := <-udpDone; err != nil {
+		t.Fatalf("upstream UoT server error = %v", err)
+	}
+}
+
 func TestUnmarshalCaddyfileFallbackFalseSticksAfterProvision(t *testing.T) {
 	dispenser := caddyfile.NewTestDispenser(`
 	anytls {
